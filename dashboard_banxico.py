@@ -1,5 +1,5 @@
 # Tablero del SIE de Banxico, con token
-# Herramientas de Visualización · IDIA22X · Unidad III
+# Herramientas de Visualización · IDIA22X · Paarcial III
 #
 #     pip install -r requirements.txt
 #     streamlit run dashboard_banxico.py
@@ -244,7 +244,6 @@ with derecha:
                "subir significa que el peso se debilitó.")
 
 abajo_izq, abajo_der = st.columns(2)
-
 with abajo_izq:
     st.subheader("Qué tan movido estuvo cada año")
     principal["Variacion"] = principal["Valor"].pct_change() * 100
