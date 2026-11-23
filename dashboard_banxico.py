@@ -1,6 +1,18 @@
 # Tablero del SIE de Banxico, con token
-# Herramientas de Visualización · IDIA22X · Paarcial III
+# Herramientas de Visualización · IDIA-222 · Parcial III
+# Emiliano Rivas de la Vega · 125053518
 #
+# Prueba de implementación del dashboard base del docente.
+# Cambios hechos en esta versión:
+#   1. Se quitó la gráfica "Promedio por mes y año" (mapa de calor).
+#      Repetía el nivel que ya muestra la serie con su tendencia y el
+#      promedio mensual escondía la volatilidad diaria.
+#   2. Se añadió la gráfica "Volatilidad móvil" (abajo a la derecha).
+#      Muestra cómo cambia la inestabilidad día a día, cosa que el
+#      boxplot por año solo resumía.
+#   3. Se añadió un modo de ejemplo para probar sin token.
+#
+# Para correrlo:
 #     pip install -r requirements.txt
 #     streamlit run dashboard_banxico.py
 #
@@ -15,6 +27,7 @@ import os
 from datetime import date, datetime
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import requests
 import seaborn as sns
@@ -54,17 +67,27 @@ if TOKEN and len(TOKEN) < 32:
              "Revisa que esté completo y sin comillas.")
     st.stop()
 
-if not TOKEN:
-    st.error("Falta el token del SIE.")
-    st.markdown(
-        "1. Pídelo gratis en "
-        "https://www.banxico.org.mx/SieAPIRest/service/v1/token\n"
-        "2. Crea la carpeta `.streamlit` junto a este archivo.\n"
-        "3. Dentro, un archivo `secrets.toml` con la línea:\n"
-        '   `banxico_token = "tu-token"`\n'
-        "4. Vuelve a cargar esta página."
-    )
-    st.stop()
+
+# ─── Datos de ejemplo (solo para probar sin token) ─────────────────────
+# Genera una serie parecida al tipo de cambio FIX, con días hábiles,
+# para poder ver el tablero aunque todavía no tengas el token.
+# No son datos reales de Banxico, solo sirven para la prueba.
+def generar_datos_ejemplo(clave, inicio, fin):
+    fechas = pd.bdate_range(inicio, fin)
+    rng = np.random.default_rng(42)
+    # Variación diaria típica chica, con algunos días de salto.
+    rendimientos = rng.normal(0, 0.004, len(fechas))
+    rendimientos[::180] += rng.normal(0, 0.02, len(rendimientos[::180]))
+    valores = 20.5 * (1 + rendimientos).cumprod()
+    df = pd.DataFrame({
+        "Fecha": fechas,
+        "Valor": valores,
+        "Clave": clave,
+        "Serie": "Tipo de cambio FIX (datos de ejemplo)",
+    })
+    df["Anio"] = df["Fecha"].dt.year
+    df["Mes"] = df["Fecha"].dt.month
+    return df, {clave: 0}
 
 
 # ─── La consulta ───────────────────────────────────────────────────────
@@ -144,18 +167,39 @@ if inicio >= fin:
     st.error("La fecha inicial debe ser anterior a la final.")
     st.stop()
 
-with st.spinner("Consultando el SIE..."):
-    try:
-        df, faltantes = consultar(tuple(claves), str(inicio), str(fin), TOKEN)
-    except PermissionError as e:
-        st.error(str(e))
+# Si no hay token, se puede probar con datos de ejemplo.
+# Con token, esta parte ni aparece y se consulta el SIE normal.
+modo_ejemplo = False
+if not TOKEN:
+    st.warning("No hay token del SIE, así que se muestran datos de ejemplo.")
+    modo_ejemplo = st.checkbox(
+        "Probar con datos de ejemplo (sin token)", value=True)
+    if not modo_ejemplo:
+        st.markdown(
+            "1. Pídelo gratis en "
+            "https://www.banxico.org.mx/SieAPIRest/service/v1/token\n"
+            "2. Crea la carpeta `.streamlit` junto a este archivo.\n"
+            "3. Dentro, un archivo `secrets.toml` con la línea:\n"
+            '   `banxico_token = "tu-token"`\n'
+            "4. Vuelve a cargar esta página."
+        )
         st.stop()
-    except ValueError as e:
-        st.warning(str(e))
-        st.stop()
-    except requests.exceptions.RequestException as e:
-        st.error(f"No se pudo consultar el SIE: {e}")
-        st.stop()
+
+if modo_ejemplo:
+    df, faltantes = generar_datos_ejemplo(claves[0], inicio, fin)
+else:
+    with st.spinner("Consultando el SIE..."):
+        try:
+            df, faltantes = consultar(tuple(claves), str(inicio), str(fin), TOKEN)
+        except PermissionError as e:
+            st.error(str(e))
+            st.stop()
+        except ValueError as e:
+            st.warning(str(e))
+            st.stop()
+        except requests.exceptions.RequestException as e:
+            st.error(f"No se pudo consultar el SIE: {e}")
+            st.stop()
 
 limpio = df.dropna(subset=["Valor"]).copy()
 if limpio.empty:
@@ -171,7 +215,8 @@ titulo_principal = principal["Serie"].iloc[0]
 st.title("Tablero de series del SIE")
 # El título lo declara Banxico: confirma que la clave es la correcta.
 st.caption(f"{titulo_principal} · del {inicio} al {fin} · "
-           f"consultado el {datetime.now():%d/%m/%Y %H:%M}")
+           f"consultado el {datetime.now():%d/%m/%Y %H:%M}"
+           + (" · datos de ejemplo" if modo_ejemplo else ""))
 
 primero = principal["Valor"].iloc[0]
 ultimo = principal["Valor"].iloc[-1]
@@ -257,22 +302,23 @@ with abajo_izq:
     st.pyplot(fig)
 
 with abajo_der:
-    st.subheader("Promedio por mes y año")
-    calor = principal.pivot_table(index="Anio", columns="Mes",
-                                  values="Valor", aggfunc="mean")
+    # GRÁFICA NUEVA: volatilidad móvil.
+    # Es la desviación estándar móvil de la variación diaria, con la
+    # misma ventana del slider de arriba. Un pico aquí es un periodo
+    # inestable, aunque el nivel del tipo de cambio no se haya movido
+    # tanto. El boxplot de la izquierda solo resume cada año, este
+    # muestra cuándo pasó, día a día.
+    st.subheader(f"Volatilidad móvil ({suavizado} días)")
+    principal["Volatilidad"] = principal["Variacion"].rolling(suavizado).std()
+    vol = principal.dropna(subset=["Volatilidad"])
 
     fig, ax = plt.subplots(figsize=(6, 3.4))
-    imagen = ax.imshow(calor, cmap="YlGnBu", aspect="auto")
-    fig.colorbar(imagen, ax=ax)
-    ax.set_xticks(range(len(calor.columns)))
-    ax.set_xticklabels(["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul",
-                        "Ago", "Sep", "Oct", "Nov", "Dic"][:len(calor.columns)])
-    ax.set_yticks(range(len(calor.index)))
-    ax.set_yticklabels(calor.index)
-    ax.grid(False)
+    ax.plot(vol["Fecha"], vol["Volatilidad"], color=ROJO, linewidth=1.8)
+    ax.set_xlabel("Fecha")
+    ax.set_ylabel("Desviación estándar de la variación diaria (%)")
     st.pyplot(fig)
-    st.caption("Escala secuencial: el valor tiene orden pero no un cero "
-               "con significado, así que no va divergente.")
+    st.caption("Picos altos = días más inestables. Usa los mismos días "
+               "del slider de media móvil de la izquierda.")
 
 
 # ─── Datos ─────────────────────────────────────────────────────────────
